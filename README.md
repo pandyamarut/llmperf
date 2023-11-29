@@ -24,11 +24,8 @@ extensible (including a pluggable endpoints, varying traffic load etc).
 
 TODO:
 
-- Make running the benchmark not only possible from
-  command line, but also possible to integrate easily into CI/CD or job scheduling
-  systems.
-- Control where the generated files and information go.
-- Automate report generation.
+- Add Streaming changes. (sseclient)
+- Make this generic for all the use cases. 
 
 ## Usage
 
