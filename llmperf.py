@@ -16,6 +16,7 @@ from transformers import LlamaTokenizerFast
 from huggingface_hub import InferenceClient
 
 FRAMEWORKS = [
+    "vLLM",
     "runpod",
 ]
 
@@ -142,8 +143,8 @@ def validate(ep_config, sample_lines):
     elif ep_config["framework"] == "runpod":
         try:
             st = time.time()
-            runpod.api_key = "<ADD_RUNPOD_API_KEY>"
-            endpoint = runpod.Endpoint("<ADD_ENDPOINT_ID>")
+            runpod.api_key = "5AU6E7HG8TE2U5UEFYGGNFHEW7BDY8HXAF4FS1XO"
+            endpoint = runpod.Endpoint("mfh5iqn1i1wk9i")
             run_request = endpoint.run_sync(
                 {
                     "input": {
