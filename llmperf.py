@@ -1,8 +1,14 @@
 import argparse
 from collections import defaultdict
-import ray, openai
+import ray
+import openai
 from num2words import num2words
-import time, os, sys, re, json, datetime
+import time
+import os
+import sys
+import re
+import json
+import datetime
 import random
 from dotenv import load_dotenv
 import pandas as pd
@@ -10,15 +16,7 @@ from transformers import LlamaTokenizerFast
 from huggingface_hub import InferenceClient
 
 FRAMEWORKS = [
-    "anyscale",
-    "openai",
-    "fireworks",
-    "vertexai",
-    "sagemaker",
-    "perplexity",
-    "together",
-    "vllm",
-    "tgi"
+    "runpod",
 ]
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -29,7 +27,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 # TODO(mwk): too much dependence on args globally. Clean up methods to not directly
 # read from args to facilitate writing scripts.
 
-tokenizer = LlamaTokenizerFast.from_pretrained("hf-internal-testing/llama-tokenizer")
+tokenizer = LlamaTokenizerFast.from_pretrained(
+    "hf-internal-testing/llama-tokenizer")
 sys_prompt = "You are a helpful assistant that respeonds with the answer in the most concise possible way."
 
 
@@ -99,10 +98,12 @@ def validate(ep_config, sample_lines):
     prompt, rnd_num = prompt_generator(
         args.num_digits, args.min_lines, args.max_lines, sample_lines
     )
-    tokens_in = len(tokenizer.encode(prompt)) + len(tokenizer.encode(sys_prompt)) + 4
+    tokens_in = len(tokenizer.encode(prompt)) + \
+        len(tokenizer.encode(sys_prompt)) + 4
     words = ""
     id = None
     st = et = ttft = 0
+    # Example-Config
     if ep_config["framework"] in [
         "anyscale",
         "openai",
@@ -138,47 +139,21 @@ def validate(ep_config, sample_lines):
             et = time.time()
         except Exception as e:
             return ("Exception", -1, -1, -1, -1, str(e), "")
-    elif ep_config["framework"] == "together":
+    elif ep_config["framework"] == "runpod":
         try:
             st = time.time()
-            url = ep_config["api_base"]
-            payload = {
-                "model": ep_config["model"],
-                "prompt": sys_prompt + prompt,
-                "max_tokens": args.max_tokens,
-                "temperature": 0,
-                "stream_tokens": True,
-            }
-            headers = {
-                "accept": "application/json",
-                "content-type": "application/json",
-                "Authorization": f"Bearer {ep_config['api_key']}",
-            }
-            response = requests.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            client = sseclient.SSEClient(response)
-            for event in client.events():
-                if ttft == 0:
-                    ttft = time.time() - st
-                if event.data == "[DONE]":
-                    break
-                partial_result = json.loads(event.data)
-                words += partial_result["choices"][0]["text"]
-            et = time.time()
-        except Exception as e:
-            return ("Exception", -1, -1, -1, -1, str(e), "")
-    elif ep_config["framework"] == "vertexai":
-        chat_model = ChatModel.from_pretrained(ep_config["model"])
-        chat = chat_model.start_chat(
-            context=sys_prompt,
-        )
-        try:
-            st = time.time()
-            responses = chat.send_message_streaming(
-                message=prompt,
-                temperature=0,
-                max_output_tokens=args.max_tokens,
-            )
+            runpod.api_key = "<ADD_RUNPOD_API_KEY>"
+            endpoint = runpod.Endpoint("<ADD_ENDPOINT_ID>")
+            run_request = endpoint.run_sync(
+                {
+                    "input": {
+                        "prompt": "who is the president of the united states?",
+                        "sampling_params": {"max_tokens": args.max_tokens},
+                    }
+                })
+
+            print(run_request['text'][0])
+            responses = run_request['text'][0]
             results = []
             for response in responses:
                 if ttft == 0:
@@ -186,56 +161,6 @@ def validate(ep_config, sample_lines):
                 results.append(str(response))
             words = "".join(results)
 
-            et = time.time()
-        except Exception as e:
-            return ("Exception", -1, -1, -1, -1, str(e), "")
-
-    elif ep_config["framework"] == "sagemaker":
-        sm_runtime = boto3.client("sagemaker-runtime", region_name=ep_config["region"])
-        message = {
-            "inputs": [
-                [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt},
-                ]
-            ],
-            "parameters": {
-                "max_new_tokens": args.max_tokens,
-                ## we can't set temperature to 0 in SM
-                "temperature": 0.01,
-            },
-        }
-        try:
-            st = time.time()
-            response = sm_runtime.invoke_endpoint_with_response_stream(
-                EndpointName=ep_config["endpoint_name"],
-                ContentType="application/json",
-                Body=json.dumps(message),
-                CustomAttributes="accept_eula=true",
-            )
-            event_stream = response["Body"]
-            json_byte = b""
-            for line, ttft, et in LineIterator(event_stream):
-                json_byte += line
-            resp = json.loads(json_byte)
-            ttft = ttft - st
-            words = resp[0]["generation"]["content"]
-            et = time.time()
-        except Exception as e:
-            return ("Exception", -1, -1, -1, -1, str(e), "")
-    elif ep_config["framework"] == "tgi":
-
-        model = ep_config["model"] if ep_config["api_base"] is None else ep_config["api_base"]
-        api_key = ep_config["api_key"]
-        client = InferenceClient(model=model, token=api_key)
-        query = f"[INST] {sys_prompt} {prompt} [/INST]"
-        try:
-            st = time.time()
-            response = client.text_generation(query, max_new_tokens=args.max_tokens, temperature=.1, stream=True)
-            for tok in response:
-                words += tok
-                if ttft == 0:
-                    ttft = time.time() - st
             et = time.time()
         except Exception as e:
             return ("Exception", -1, -1, -1, -1, str(e), "")
@@ -320,7 +245,8 @@ def results_analysis(query_results, results_dict):
     cdf = df[df.valid != "Exception"].copy()
     print(f"Clean DF is: {len(cdf)}")
     if len(cdf) > 0:
-        cdf["total_tokens_per_s"] = (cdf.tokens_out + cdf.tokens_in) / cdf.total_time
+        cdf["total_tokens_per_s"] = (
+            cdf.tokens_out + cdf.tokens_in) / cdf.total_time
         cdf["out_tokens_per_s"] = cdf.tokens_out / cdf.total_time
         cdf["inter_tokens_delay"] = cdf.total_time / cdf.tokens_out
         mean_e2e = cdf["total_time"].mean()
@@ -339,14 +265,17 @@ def results_analysis(query_results, results_dict):
             f"ITL (out): {cdf.inter_tokens_delay.mean()*1000:.2f} ms/token, mean tokens/s output (out): {cdf.out_tokens_per_s.mean():.2f} token/s"
         )
         # Put things in a dictionary and save the results
-        results_dict["end_timestamp"] = datetime.datetime.fromtimestamp(ts).isoformat()
+        results_dict["end_timestamp"] = datetime.datetime.fromtimestamp(
+            ts).isoformat()
         results_dict["total_time"] = float(cdf.total_time.mean())
         results_dict["mean_ttft"] = int(f"{mean_ttft*1000:.0f}")
         results_dict["mean_tokens_in"] = mean_tokens_in
         results_dict["mean_tokens_out"] = mean_tokens_out
-        results_dict["total_tokens_per_s"] = float(cdf.total_tokens_per_s.mean())
+        results_dict["total_tokens_per_s"] = float(
+            cdf.total_tokens_per_s.mean())
         results_dict["out_tokens_per_s"] = float(cdf.out_tokens_per_s.mean())
-        results_dict["inter_token_delay"] = float(cdf.inter_tokens_delay.mean() * 1000)
+        results_dict["inter_token_delay"] = float(
+            cdf.inter_tokens_delay.mean() * 1000)
 
     def error_analysis(df):
         # Group exceptions based on exceptions cause.
@@ -385,8 +314,10 @@ if __name__ == "__main__":
         default="sonnet.txt",
         help="Prompt sample file name",
     )
-    parser.add_argument("--min-lines", type=int, default=15, help="min number of lines")
-    parser.add_argument("--max-lines", type=int, default=50, help="max number of lines")
+    parser.add_argument("--min-lines", type=int, default=15,
+                        help="min number of lines")
+    parser.add_argument("--max-lines", type=int, default=50,
+                        help="max number of lines")
     parser.add_argument(
         "--req-lines",
         type=int,
@@ -432,42 +363,8 @@ if __name__ == "__main__":
     if args.framework not in FRAMEWORKS:
         print(f"Choose a framework in {FRAMEWORKS}")
         sys.exit(0)
-    elif args.framework == "anyscale":
-        endpoint_config["api_base"] = os.environ["ANYSCALE_API_BASE"]
-        endpoint_config["api_key"] = os.environ["ANYSCALE_API_KEY"]
-    elif args.framework == "openai":
-        endpoint_config["api_base"] = os.environ["OPENAI_API_BASE"]
-        endpoint_config["api_key"] = os.environ["OPENAI_API_KEY"]
-    elif args.framework == "fireworks":
-        endpoint_config["api_base"] = os.environ["FIREWORKS_API_BASE"]
-        endpoint_config["api_key"] = os.environ["FIREWORKS_API_KEY"]
-    elif args.framework == "perplexity":
-        endpoint_config["api_base"] = os.environ["PERPLEXITY_API_BASE"]
-        endpoint_config["api_key"] = os.environ["PERPLEXITY_API_KEY"]
-    elif args.framework == "together":
-        import requests, sseclient
-
-        endpoint_config["api_base"] = os.environ["TOGETHER_API_BASE"]
-        endpoint_config["api_key"] = os.environ["TOGETHER_API_KEY"]
-    elif args.framework == "vertexai":
-        import vertexai
-        from vertexai.preview.language_models import ChatModel
-
-        endpoint_config["api_base"] = "VertexAI Endpoint"
-        endpoint_config["project_id"] = os.environ["VERTEXAI_PROJECT_ID"]
-        vertexai.init(project=endpoint_config["project_id"])
-    elif args.framework == "sagemaker":
-        import boto3
-
-        endpoint_config["api_base"] = "SageMaker Endpoint"
-        endpoint_config["region"] = os.environ["SAGEMAKER_REGION"]
-        endpoint_config["endpoint_name"] = os.environ["SAGEMAKER_ENDPOINT_NAME"]
-    elif args.framework == "vllm":
-        endpoint_config["api_base"] = os.environ["VLLM_API_BASE"]
-        endpoint_config["api_key"] = os.environ["VLLM_API_KEY"]
-    elif args.framework == "tgi":
-        endpoint_config["api_base"]=os.environ["TGI_API_BASE"]
-        endpoint_config["api_key"]=os.environ["TGI_API_KEY"]
+    elif args.framework == "runpod":
+        import runpod
 
     endpoint_config["framework"] = args.framework
     endpoint_config["model"] = args.model
@@ -476,9 +373,8 @@ if __name__ == "__main__":
     sample_lines = f.readlines()
     f.close()
 
-    ## Endpoint evaluation
+    # Endpoint evaluation
     query_results = endpoint_evaluation(endpoint_config, sample_lines)
 
-    ## Results Analysis
-    args.api_base = endpoint_config["api_base"]
+    # Results Analysis
     results_analysis(query_results, vars(args))
